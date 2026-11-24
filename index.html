@@ -168,12 +168,12 @@ footer{font-size:12px;color:#738197;text-align:center;padding:0 20px 30px}
       </div>
       <div id="extended-sections"></div><div class="form-actions">
         <button type="button" class="button primary" id="preview">Сформировать практические №1–7</button>
-        <p class="tip">Распечатать в PDF можно прямо с телефона. Справочные материалы по умолчанию скрыты, а цифры со знаком * — условные значения.</p>
+        <p class="tip">Незаполненные поля получают немного разные учебные примеры при каждой новой генерации. В пределах одного открытого отчёта значения остаются постоянными. Числа со знаком * — условные, а не измеренные.</p>
       </div>
     </form>
   </section>
   <section id="preview-shell" class="preview-shell" hidden>
-    <div class="preview-toolbar no-print"><div><strong>Конспект для переписывания в тетрадь</strong><small>По умолчанию показано то, что нужно переписать. Серые подсказки переносить не надо.</small><label class="reference-toggle"><input id="show-reference" type="checkbox"> Показать справочные таблицы, изображения и буквенную сетку (не переписывать)</label></div><div class="preview-buttons"><button class="button ghost" id="back" type="button">К данным</button><button class="button primary" id="print" type="button">Печать / PDF</button></div></div>
+    <div class="preview-toolbar no-print"><div><strong>Конспект для переписывания в тетрадь</strong><small>По умолчанию показано то, что нужно переписать. Серые подсказки переносить не надо.</small><label class="reference-toggle"><input id="show-reference" type="checkbox"> Показать справочные таблицы, изображения и буквенную сетку (не переписывать)</label></div><div class="preview-buttons"><button class="button ghost" id="back" type="button">К данным</button><button class="button ghost" id="reroll" type="button">Новый учебный вариант</button><button class="button primary" id="print" type="button">Печать / PDF</button></div></div>
     <div id="print-doc" class="print-doc"></div>
   </section>
 </main>
@@ -418,59 +418,123 @@ function loadInputs(data){
  }
 }
 
-function resolveData(raw){
- const d={}, used=[];
+// Новая случайная учебная выборка создаётся при каждом новом запуске генератора.
+// Числа, введённые человеком, не меняются; автоматически подобранные имеют знак *.
+const rand=(lo,hi)=>lo+Math.random()*(hi-lo);
+const randInt=(lo,hi)=>Math.floor(rand(lo,hi+1));
+const pick=(items)=>items[randInt(0,items.length-1)];
+function resolveData(raw, savedSamples=null){
+ const d={},used=[];
+ const previous = savedSamples && typeof savedSamples==='object' ? savedSamples : {};
  function read(name,def=DEFAULTS[name]){
   if(Object.prototype.hasOwnProperty.call(d,name))return d[name];
   const rawval=raw[name];let synthetic=isMissing(rawval),val;
-  if(synthetic){val=typeof def==='function'?def():def; used.push(name);}
-  else if(numericKeys.has(name)){
+  if(synthetic){
+   val=Object.prototype.hasOwnProperty.call(previous,name) ? previous[name] : (typeof def==='function'?def():def);
+   used.push(name);
+  }else if(numericKeys.has(name)){
    val=toNumber(rawval);
-   if(!Number.isFinite(val)){throw new Error('В поле «'+name+'» нужно число или прочерк «—».');}
-  } else val=String(rawval).trim();
-  d[name]={v:val,synthetic}; return d[name];
+   if(!Number.isFinite(val))throw new Error('В поле «'+name+'» нужно число или оставить поле пустым.');
+  }else val=String(rawval).trim();
+  d[name]={v:val,synthetic};return d[name];
  }
- // Допущения от пола и реальных антропометрических данных.
- read('name','');read('sex','male'); read('course','1');
- read('age',30);read('height',168);read('weight',72);read('restPulse',76);
- const sex=d.sex.v;
- const H=d.height.v,W=d.weight.v,PR=d.restPulse.v;
- const male=sex==='male';
- for(const field of Object.keys(DEFAULTS))if(!Object.prototype.hasOwnProperty.call(d,field)){
+ read('name','');read('sex','male');read('course','1');
+ const male=d.sex.v==='male';
+ read('age',randInt(27,33));
+ read('height',randInt(male?164:159,male?172:167));
+ const H=d.height.v;
+ const weightBase=(male?72:62)+(H-(male?168:163))*.45;
+ read('weight',round(weightBase+rand(-4,4),1));
+ read('restPulse',randInt(70,82));
+ const W=d.weight.v,PR=d.restPulse.v,A=d.age.v;
+ // Приоритет расчёта: сначала базовые показатели, затем зависящие от них.
+ const priority=['chestRest','chestIn','chestOut','sitting','legs','gripR','gripL',
+   'lyingPulse','standingPulse','stangeBefore','stangeAfter','genchiBefore','genchiAfter',
+   'step1','step2','step3','tap1','tap2','tap3','tap4','reaction','reaction2','reaction3',
+   'moving','moving2','moving3','angleGoal','angleAttempt1','angleAttempt2','angleAttempt3',
+   'effortTarget','effortAttempt1','effortAttempt2','effortAttempt3',
+   'mentalFirstViewed','mentalSecondViewed','mentalFirstTarget','mentalSecondTarget',
+   'mentalFirstCorrect','mentalSecondCorrect','mentalFirstErrors','mentalSecondErrors',
+   'mentalGood','mentalTotal'];
+ const keys=[...new Set([...priority,...Object.keys(DEFAULTS)])];
+ for(const field of keys){
+  if(Object.prototype.hasOwnProperty.call(d,field))continue;
   let def=DEFAULTS[field];
   switch(field){
-   case 'wrist':def=male?17.5:15.5;break;
-   case 'chestRest':def=round(H*.43+W*.3,0);break; // условная модель, не норматив
-   case 'chestIn':def=round(read('chestRest').v+(male?3:2.5),1);break;
-   case 'chestOut':def=round(read('chestRest').v-(male?3:2.5),1);break;
-   case 'sitting':def=round(H*.52,0);break;
+   case 'wrist':def=round(rand(male?16.8:14.8,male?18.4:16.4),1);break;
+   case 'chestRest':def=Math.round(H*.43+W*.3+rand(-2.0,2.0));break;
+   case 'chestIn':def=round(read('chestRest').v+rand(2.7,4.3),1);break;
+   case 'chestOut':def=round(read('chestRest').v-rand(2.3,3.8),1);break;
+   case 'sitting':def=Math.round(H*.52+rand(-1.6,1.6));break;
    case 'legs':def=round(H-read('sitting').v,0);break;
-   case 'vital':def=male?3800:3100;break;
-   case 'gripR':def=male?44:29;break;
-   case 'gripL':def=male?40:26;break;
-   case 'ruff2':def=PR+44;break;
-   case 'ruff3':def=PR+12;break;
-   case 'standingPulse':def=PR+12;break;
-   case 'lyingPulse':def=PR;break;
-   case 'dosePulse':def=PR+40;break;
-   case 'doseRecover':def=PR+18;break;
-   case 'stangeBefore':case 'genchiBefore':def=Math.round(PR/2);break;
-   case 'stangeAfter':def=Math.round(PR/2)+3;break;
-   case 'genchiAfter':def=Math.round(PR/2)+2;break;
-   case 'bioPostPulse':def=PR+22;break;
+   case 'vital':def=Math.round((male?3800:3050)+(H-(male?168:163))*13+rand(-330,330));break;
+   case 'gripR':def=round(rand(male?39:24,male?49:33),1);break;
+   case 'gripL':def=round(read('gripR').v-rand(1.8,4.8),1);break;
+   case 'breath':def=randInt(14,19);break;
+   case 'sys':def=randInt(116,130);break;
+   case 'dia':def=randInt(72,83);break;
+   case 'ruff2':def=PR+randInt(39,52);break;
+   case 'ruff3':def=PR+randInt(8,17);break;
+   case 'lyingPulse':def=PR+randInt(-2,1);break;
+   case 'standingPulse':def=read('lyingPulse').v+randInt(9,16);break;
+   case 'dosePulse':def=PR+randInt(34,49);break;
+   case 'doseRecover':def=PR+randInt(10,23);break;
+   case 'recovery':def=round(rand(2.2,3.9),1);break;
+   case 'stange':def=Math.max(20,randInt(43,56)-Math.max(0,Math.round((A-40)*.25)));break;
+   case 'genchi':def=Math.max(15,randInt(25,35)-Math.max(0,Math.round((A-40)*.15)));break;
+   case 'stangeBefore':case 'genchiBefore':def=Math.round(PR/2)+randInt(-1,1);break;
+   case 'stangeAfter':def=read('stangeBefore').v+randInt(1,4);break;
+   case 'genchiAfter':def=read('genchiBefore').v+randInt(1,4);break;
+   case 'stepTime':def=randInt(165,210);break;
+   case 'step1':def=randInt(47,56);break;
+   case 'step2':def=read('step1').v-randInt(4,8);break;
+   case 'step3':def=read('step2').v-randInt(3,7);break;
    case 'stepHeight':def=male?50:43;break;
-   case 'effortAttempt1':def=round(read('gripR').v*.5,1);break;
-   case 'effortAttempt2':def=round(read('gripR').v*.52,1);break;
-   case 'effortAttempt3':def=round(read('gripR').v*.48,1);break;
+   case 'romberg':def=randInt(16,29);break;
+   case 'yarotsky':def=randInt(28,39);break;
+   case 'tap1':def=randInt(66,76);break;
+   case 'tap2':def=read('tap1').v+randInt(-4,1);break;
+   case 'tap3':def=read('tap2').v+randInt(-4,1);break;
+   case 'tap4':def=read('tap3').v+randInt(-4,1);break;
+   case 'reaction':def=randInt(16,22);break;
+   case 'reaction2':case 'reaction3':def=Math.max(8,read('reaction').v+randInt(-2,2));break;
+   case 'moving':def=randInt(9,16);break;
+   case 'moving2':case 'moving3':def=Math.max(4,read('moving').v+randInt(-2,2));break;
+   case 'angleGoal':def=90;break;
+   case 'angleAttempt1':case 'angleAttempt2':case 'angleAttempt3':def=read('angleGoal').v+randInt(-5,5);break;
+   case 'effortTarget':def=50;break;
+   case 'effortAttempt1':case 'effortAttempt2':case 'effortAttempt3':
+    def=round(read('gripR').v*read('effortTarget').v/100*rand(.92,1.08),1);break;
+   case 'mentalFirstViewed':def=randInt(330,405);break;
+   case 'mentalSecondViewed':def=Math.max(50,read('mentalFirstViewed').v+randInt(-35,22));break;
+   case 'mentalFirstTarget':def=Math.max(1,Math.round(read('mentalFirstViewed').v*rand(.11,.15)));break;
+   case 'mentalSecondTarget':def=Math.max(1,Math.round(read('mentalSecondViewed').v*rand(.11,.15)));break;
+   case 'mentalFirstCorrect':def=Math.max(0,read('mentalFirstTarget').v-randInt(1,4));break;
+   case 'mentalSecondCorrect':def=Math.max(0,read('mentalSecondTarget').v-randInt(1,5));break;
+   case 'mentalFirstErrors':case 'mentalSecondErrors':def=randInt(0,2);break;
+   case 'mentalGood':def=read('mentalFirstCorrect').v+read('mentalSecondCorrect').v;break;
+   case 'mentalTotal':def=read('mentalFirstTarget').v+read('mentalSecondTarget').v;break;
+   case 'bioPostPulse':def=PR+randInt(17,29);break;
+   case 'bioReaction':def=randInt(18,26);break;
+   case 'bioBalance':def=randInt(22,34);break;
+   case 'bioSkin':def=randInt(4,9);break;
+   case 'bioFloor':def=pick(['Касание пола пальцами','Касание пола ладонями','Касание голеней']);break;
+   case 'bioArms':def=pick(['Касание пальцами','Легко сцеплены в замок','Руки приблизились, но не коснулись']);break;
+   case 'sleepHours':def=round(rand(7.0,8.7),1);break;
+   case 'weeklyExercise':def=randInt(2,4);break;
+   case 'activityMin':def=randInt(30,65);break;
+   case 'waterLiters':def=round(W*.03+rand(-.2,.3),1);break;
+   case 'trainingDuration':def=pick([45,50,55]);break;
   }
   read(field,def);
  }
- // Дискретные контролируемые параметры формы
  for(const k of ['height','weight','age','restPulse','chestRest','chestIn','chestOut','stepTime','mentalFirstTarget','mentalSecondTarget','trainingDuration']){
   if(!(d[k].v>0))throw new Error('В поле '+k+' значение должно быть больше нуля.');
  }
  if(d.chestIn.v<=d.chestOut.v)throw new Error('ОГК на вдохе должна быть больше ОГК на выдохе.');
  if(d.sys.v<=d.dia.v)throw new Error('Верхнее АД должно быть больше нижнего.');
+ if(d.mentalFirstCorrect.v>d.mentalFirstTarget.v||d.mentalSecondCorrect.v>d.mentalSecondTarget.v)
+  throw new Error('Количество правильно отмеченных букв не может превышать количество заданных.');
  return {d,used};
 }
 function v(data,key){return data.d[key]?.v;}
@@ -737,8 +801,15 @@ function practiceSeven(x){
  `);
 }
 
-function generate(raw){
- const x=resolveData(raw),name=h(v(x,'name')||'Студент');
+let lastGenerated = null;
+let importedVariant = null;
+function syntheticSnapshot(x){
+ const samples={};for(const [key,item] of Object.entries(x.d))if(item.synthetic)samples[key]=item.v;
+ return samples;
+}
+function generate(raw, samples=null){
+ const x=resolveData(raw,samples),name=h(v(x,'name')||'Студент');
+ lastGenerated={fields:structuredClone(raw), samples:syntheticSnapshot(x)};
  const givenCount=Object.keys(x.d).filter(k=>!syn(x,k) && !['sex','course','sport','targetQuality'].includes(k)).length;
  const sampleCount=x.used.length;
  const metadata=`<div class="no-split"><h1>Практические работы по физической культуре</h1><p class="lead">Практические занятия №1–7</p><p>Студент: <b>${name}</b>. Пол: <b>${v(x,'sex')==='male'?'мужской':'женский'}</b>. Курс: <b>${h(v(x,'course'))}</b>.</p><p>Возраст: ${disp(x,'age',0)} лет; рост: ${disp(x,'height')} см; масса: ${disp(x,'weight')} кг; пульс в покое: ${disp(x,'restPulse',0)} уд/мин.</p><p class="small-note"><b>Условные данные:</b> числа и наблюдения со знаком * взяты из учебного примера для демонстрации методики (не результаты обследования). Без * — указаны пользователем. Количество введённых параметров: ${givenCount}; подстановок: ${sampleCount}. Для учебной сдачи реальные измерения следует проверить и заменить.</p><hr class="hr"></div>`;
@@ -748,21 +819,29 @@ function generate(raw){
 }
 
 $('#preview').addEventListener('click',()=>{
-  try{generate(getInputs()); editor.hidden=true;previewShell.hidden=false;window.scrollTo({top:0,behavior:'smooth'});}
+  const raw=getInputs();
+  const samples=importedVariant&&JSON.stringify(raw)===importedVariant.signature?importedVariant.samples:null;
+  importedVariant=null;
+  try{generate(raw,samples); editor.hidden=true;previewShell.hidden=false;window.scrollTo({top:0,behavior:'smooth'});}
   catch(err){alert('Не удалось сформировать документ: '+err.message);}
+});
+$('#reroll').addEventListener('click',()=>{
+ try{generate(getInputs());window.scrollTo({top:0,behavior:'smooth'});}catch(err){alert('Не удалось создать новый вариант: '+err.message);}
 });
 $('#print').addEventListener('click',()=>window.print());
 $('#show-reference').addEventListener('change',e=>{printDoc.classList.toggle('show-reference',e.target.checked);});
 $('#back').addEventListener('click',()=>{previewShell.hidden=true;editor.hidden=false;window.scrollTo({top:0,behavior:'smooth'});});
-$('#reset').addEventListener('click',()=>{if(confirm('Очистить введённые данные?'))form.reset();});
+$('#reset').addEventListener('click',()=>{if(confirm('Очистить введённые данные?')){form.reset();lastGenerated=null;importedVariant=null;}});
 $('#demo').addEventListener('click',()=>{
   // Демонстрационный профиль, также сохраняется как пример, не как измерение.
   const demo={name:'Пример студента',sex:'male',course:'1',age:'30',height:'168',weight:'72',restPulse:'76'};
-  loadInputs(demo);
+  loadInputs(demo); lastGenerated=null;importedVariant=null;
   alert('Заполнены основные данные демонстрационного студента. Остальные поля оставлены пустыми и получат пометку * в PDF.');
 });
 $('#export').addEventListener('click',()=>{
-  const json=JSON.stringify({format:'pe-practice-v1',fields:getInputs()},null,2);
+  const raw=getInputs();
+  const saved=lastGenerated&&JSON.stringify(lastGenerated.fields)===JSON.stringify(raw)?lastGenerated.samples:null;
+  const json=JSON.stringify({format:'pe-practice-v2',fields:raw,...(saved?{generatedSamples:saved}:{})},null,2);
   const a=document.createElement('a');const url=URL.createObjectURL(new Blob([json],{type:'application/json;charset=utf-8'}));
   a.href=url;a.download='physical_education_inputs.json';document.body.appendChild(a);a.click();a.remove();
   setTimeout(()=>URL.revokeObjectURL(url),2000);
@@ -770,7 +849,9 @@ $('#export').addEventListener('click',()=>{
 $('#import').addEventListener('click',()=>$('#import-file').click());
 $('#import-file').addEventListener('change',async e=>{
  const f=e.target.files?.[0];if(!f)return;
- try{const data=JSON.parse(await f.text());const fields=data.fields||data; if(typeof fields!=='object'||!fields)throw Error('Неверный формат');loadInputs(fields);alert('Данные загружены.');}
+ try{const data=JSON.parse(await f.text());const fields=data.fields||data; if(typeof fields!=='object'||!fields)throw Error('Неверный формат');loadInputs(fields);lastGenerated=null;
+  importedVariant=data.generatedSamples&&typeof data.generatedSamples==='object'?{signature:JSON.stringify(getInputs()),samples:data.generatedSamples}:null;
+  alert('Данные загружены.'+(importedVariant?' Сохранённые учебные значения будут восстановлены при первом открытии отчёта.':''));}
  catch(err){alert('Файл не удалось прочитать: '+err.message);}finally{e.target.value='';}
 });
 // Тестовые вызовы доступны в Chromium для проверки логики.
